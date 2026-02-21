@@ -2,47 +2,49 @@ const { Client } = require('discord.js-selfbot-v13');
 const express = require('express');
 const app = express();
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 app.get("/", (req, res) => res.send("Sistem Aktif!"));
-app.listen(PORT, () => console.log(`Sunucu ${PORT} portunda.`));
+app.listen(PORT, () => console.log(`Sunucu ${PORT} portunda aktif.`));
 
 const tokensRaw = process.env.TOKENS;
 const channelId = process.env.CHANNEL_ID;
 
 if (!tokensRaw || !channelId) {
-    console.error("HATA: TOKENS veya CHANNEL_ID eksik!");
+    console.error("HATA: Değişkenler eksik!");
 } else {
-    const tokenList = tokensRaw.split(",").map(t => t.trim()).filter(t => t !== "");
-    
-    tokenList.forEach((token, index) => {
-        setTimeout(() => {
-            // HATA ÇÖZÜMÜ BURADA: checkUpdate ve userSettings'i kapatıyoruz
-            const client = new Client({ 
-                checkUpdate: false,
-                ws: { properties: { $browser: "Discord iOS" } } // Mobil gibi görünmek bazen hataları çözer
-            });
+    // Virgül, boşluk veya alt satır fark etmeksizin tokenleri temizleyerek ayırır
+    const tokenList = tokensRaw.split(/[\s,]+/).filter(t => t.length > 20);
 
-            // Hatanın asıl çözümü: Kullanıcı ayarları senkronizasyonunu devre dışı bırakmak
+    console.log(`Toplam ${tokenList.length} token denenecek...`);
+
+    tokenList.forEach((token, index) => {
+        // Discord limitlerine takılmamak için girişleri zamana yayıyoruz (3 saniye arayla)
+        setTimeout(() => {
+            const client = new Client({ checkUpdate: false });
+
             client.on('ready', async () => {
-                console.log(`[Bot ${index + 1}] Giriş Başarılı: ${client.user.tag}`);
+                console.log(`✅ [Bot ${index + 1}] Giriş Başarılı: ${client.user.tag}`);
                 try {
                     const channel = await client.channels.fetch(channelId);
                     if (channel) {
                         await client.voice.joinChannel(channel, { selfMute: true, selfDeaf: true });
-                        console.log(`[Bot ${index + 1}] Kanala bağlandı.`);
+                        console.log(`🔊 [Bot ${index + 1}] Ses kanalına girdi.`);
                     }
                 } catch (e) {
-                    console.error("Ses hatası:", e.message);
+                    console.error(`❌ [Bot ${index + 1}] Ses Hatası: ${e.message}`);
                 }
             });
 
-            client.login(token).catch(() => console.error("Token geçersiz!"));
-        }, index * 2500);
+            // Tokenin sadece başını loglayarak hangi tokenin sorunlu olduğunu gösterir
+            client.login(token).catch(() => {
+                console.error(`⚠️ [Bot ${index + 1}] Geçersiz! (Token Başı: ${token.substring(0, 15)}...)`);
+            });
+        }, index * 3000); 
     });
 }
 
-// Loglardaki o çirkin hata mesajlarını susturmak için:
-process.on('unhandledRejection', (reason) => {
-    if (reason.message?.includes('reading \'all\'')) return; 
-    console.error('Hata:', reason);
+// Global hata yakalayıcı (Loglardaki 'reading all' çökmesini engeller)
+process.on('unhandledRejection', (error) => {
+    if (error.message?.includes('reading \'all\'')) return;
+    console.error('Sistem Hatası:', error.message);
 });
