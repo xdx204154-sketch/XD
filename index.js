@@ -4,7 +4,7 @@ const app = express();
 
 const PORT = process.env.PORT || 10000;
 app.get("/", (req, res) => res.send("Sistem Aktif!"));
-app.listen(PORT, () => console.log(`Sunucu ${PORT} portunda aktif.`));
+app.listen(PORT, () => console.log(`Sunucu aktif.`));
 
 const tokensRaw = process.env.TOKENS;
 const channelId = process.env.CHANNEL_ID;
@@ -12,39 +12,35 @@ const channelId = process.env.CHANNEL_ID;
 if (!tokensRaw || !channelId) {
     console.error("HATA: Değişkenler eksik!");
 } else {
-    // Virgül, boşluk veya alt satır fark etmeksizin tokenleri temizleyerek ayırır
-    const tokenList = tokensRaw.split(/[\s,]+/).filter(t => t.length > 20);
-
+    // Sadece geçerli uzunluktaki tokenleri al
+    const tokenList = tokensRaw.split(/[\s,]+/).filter(t => t.length > 25);
     console.log(`Toplam ${tokenList.length} token denenecek...`);
 
     tokenList.forEach((token, index) => {
-        // Discord limitlerine takılmamak için girişleri zamana yayıyoruz (3 saniye arayla)
+        // GİRİŞLERİ ÇOK YAVAŞLATTIK (Her bot arası 15 saniye)
         setTimeout(() => {
-            const client = new Client({ checkUpdate: false });
+            const client = new Client({ 
+                checkUpdate: false,
+                // Mobil cihaz gibi görünme ayarı (Kritik)
+                ws: { properties: { $os: "iOS", $browser: "Discord iOS", $device: "iPhone" } } 
+            });
 
             client.on('ready', async () => {
-                console.log(`✅ [Bot ${index + 1}] Giriş Başarılı: ${client.user.tag}`);
+                console.log(`✅ [Bot ${index + 1}] Bağlandı: ${client.user.tag}`);
                 try {
                     const channel = await client.channels.fetch(channelId);
                     if (channel) {
                         await client.voice.joinChannel(channel, { selfMute: true, selfDeaf: true });
-                        console.log(`🔊 [Bot ${index + 1}] Ses kanalına girdi.`);
+                        console.log(`🔊 [Bot ${index + 1}] Seste.`);
                     }
                 } catch (e) {
-                    console.error(`❌ [Bot ${index + 1}] Ses Hatası: ${e.message}`);
+                    console.error(`❌ [Bot ${index + 1}] Ses Hatası.`);
                 }
             });
 
-            // Tokenin sadece başını loglayarak hangi tokenin sorunlu olduğunu gösterir
             client.login(token).catch(() => {
-                console.error(`⚠️ [Bot ${index + 1}] Geçersiz! (Token Başı: ${token.substring(0, 15)}...)`);
+                console.error(`⚠️ [Bot ${index + 1}] Engel/Geçersiz: ${token.substring(0, 10)}...`);
             });
-        }, index * 3000); 
+        }, index * 15000); 
     });
 }
-
-// Global hata yakalayıcı (Loglardaki 'reading all' çökmesini engeller)
-process.on('unhandledRejection', (error) => {
-    if (error.message?.includes('reading \'all\'')) return;
-    console.error('Sistem Hatası:', error.message);
-});
