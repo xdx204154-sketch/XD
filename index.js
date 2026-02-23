@@ -1,29 +1,46 @@
 const { Client } = require('discord.js-selfbot-v13');
 const fs = require('fs');
+const http = require('http');
+
 const client = new Client({ checkUpdate: false });
 
-// AYARLAR (Render Environment Variables'dan çekilir)
+// AYARLAR
 const token = process.env.TOKEN;
 const targetName = (process.env.CHANNEL_NAME || "x").toLowerCase(); 
 const rawId = process.env.TARGET_USER_ID || "";
-const targetUserId = rawId.replace(/\D/g, ""); // ID içindeki rakam dışı her şeyi temizler
+const targetUserId = rawId.replace(/\D/g, "");
 
 let currentChannelId = null;
 
+// --- RENDER UYKU MODU ENGELLEYİCİ VE WEB SERVER ---
+// Bu kısım Render'ın "Inactivity" (Hareketsizlik) nedeniyle botu kapatmasını engeller.
+http.createServer((req, res) => {
+    res.write("Bot 7/24 Aktif!");
+    res.end();
+}).listen(process.env.PORT || 10000);
+
+// Kendi kendine istek atarak botu uyanık tutma (Opsiyonel ama etkilidir)
+setInterval(() => {
+    http.get(`http://localhost:${process.env.PORT || 10000}`);
+}, 10 * 60 * 1000); // 10 dakikada bir "tıkla"
+
 client.on('ready', async () => {
-    console.log(`✅ Sistem Aktif: ${client.user.tag}`);
-    
-    // mesajlar.txt dosyasını kontrol et ve oku
+    console.log(`✅ Giriş Yapıldı: ${client.user.tag}`);
+    runSpammer();
+});
+
+async function runSpammer() {
     if (!fs.existsSync('mesajlar.txt')) {
-        console.error("❌ HATA: mesajlar.txt dosyası bulunamadı!");
-        process.exit(1);
+        console.error("❌ HATA: mesajlar.txt bulunamadı!");
+        return;
     }
+
     const messages = fs.readFileSync('mesajlar.txt', 'utf8').split('\n').filter(l => l.trim());
     let i = 0;
 
+    // ANA DÖNGÜ: Hata alsa bile durmaması için While(true) + Try/Catch
     while (true) {
         try {
-            // 1. KANAL BULMA VE TAKİP ETME
             let channel = client.channels.cache.get(currentChannelId);
             
             if (!channel || channel.name.toLowerCase() !== targetName) {
@@ -34,51 +51,44 @@ client.on('ready', async () => {
                 if (targetChannel) {
                     currentChannelId = targetChannel.id;
                     channel = targetChannel;
-                    console.log(`🎯 Hedef Kanal Bulundu: #${channel.name} (ID: ${channel.id})`);
+                    console.log(`🎯 Kanal Bulundu: #${channel.name}`);
                 } else {
-                    // Kanal yoksa pusuya yat (150ms bekleyip tekrar ara)
-                    await new Promise(r => setTimeout(r, 150));
+                    await new Promise(r => setTimeout(r, 2000)); // Kanal yoksa 2sn bekle tekrar ara
                     continue;
                 }
             }
 
-            // 2. MESAJI VE ETİKETİ HAZIRLA
             let anaMesaj = messages[i];
-            // Etiketi <@ID> formatında mesajın sonuna yapıştırır
             let finalMsg = targetUserId ? `${anaMesaj} <@${targetUserId}>` : anaMesaj;
 
-            // Yazıyor... efekti
             await channel.sendTyping(); 
-            
-            // 60-70 WPM İnsansı Yazma Hızı Hesaplama
-            let yazmaSuresi = (anaMesaj.length * 75) + Math.floor(Math.random() * 500);
+            // Daha güvenli yazma süresi (Discord şüphelenmemesi için)
+            let yazmaSuresi = (anaMesaj.length * 50) + Math.floor(Math.random() * 500);
             await new Promise(r => setTimeout(r, yazmaSuresi));
 
-            // 3. MESAJI GÖNDER
+            // MESAJI GÖNDER
             await channel.send(finalMsg);
-            console.log(`🚀 Gönderildi: ${anaMesaj.substring(0, 15)}... + Etiket`);
+            console.log(`🚀 Gönderildi: ${anaMesaj.substring(0, 20)}...`);
 
-            // Bir sonraki mesaja geç
+            // İndeksi artır
             i = (i + 1) % messages.length;
-            
-            // Mesajlar arası çok kısa mola (0.2 saniye)
-            await new Promise(r => setTimeout(r, 200));
+
+            // --- ÖNEMLİ: HIZ SINIRI (RATE LIMIT) KORUMASI ---
+            // Çok hızlı mesaj atmak botun 30 dk sonra "Rate Limit" yiyip durmasına neden olur.
+            // Aralara 3-5 saniye rastgele bekleme eklemek en sağlıklısıdır.
+            let beklemeSuresi = 3000 + Math.floor(Math.random() * 2000); 
+            await new Promise(r => setTimeout(r, beklemeSuresi));
 
         } catch (err) {
-            // --- RATE LIMIT (HIZ SINIRI) KONTROLÜ ---
-            if (err.status === 429 || err.message.includes('rate limit')) {
-                console.log(`⏳ Discord Hız Sınırı! 2 saniye zorunlu mola...`);
-                await new Promise(r => setTimeout(r, 2000));
-            } else {
-                // Kanalın silinmesi veya yetki hatası gibi durumlarda ID'yi sıfırla
-                currentChannelId = null;
-                await new Promise(r => setTimeout(r, 300));
-            }
+            console.error("⚠️ Bir hata oluştu, sistem 5 saniye sonra devam edecek:", err.message);
+            currentChannelId = null; // Kanal bilgisini sıfırla ki tekrar arasın
+            await new Promise(r => setTimeout(r, 5000)); // Hata sonrası kısa mola
         }
     }
-});
+}
 
-// Render'ın botu kapatmaması için basit bir web server
-require('http').createServer((req, res) => res.end("Bot Aktif")).listen(process.env.PORT || 10000);
+// Bot çökerse otomatik yeniden bağlanması için
+client.on('error', (e) => console.error("Discord Bağlantı Hatası:", e));
+client.on('disconnect', () => console.warn("Bağlantı kesildi, tekrar deneniyor..."));
 
-client.login(token);
+client.login(token).catch(err => console.error("Giriş Hatası: Token yanlış olabilir."));
