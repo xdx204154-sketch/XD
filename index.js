@@ -1,70 +1,141 @@
-const { Client } = require('discord.js-selfbot-v13');
-const fs = require('fs');
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 
-const client = new Client({ checkUpdate: false });
+// ─── Ayarlar (Render env variables) ───
+const TOKEN = process.env.TOKEN || '';
+const CHANNEL_ID = process.env.TARGET_USER_ID || '';
+const CHANNEL_NAME = process.env.CHANNEL_NAME || 'Bilinmiyor';
+const WPM = 60;
 
-const token = process.env.TOKEN;
-const targetName = (process.env.CHANNEL_NAME || "x").toLowerCase(); 
-const rawId = process.env.TARGET_USER_ID || "";
-const targetUserId = rawId.replace(/\D/g, "");
+if (!TOKEN || !CHANNEL_ID) {
+    console.error('[X] TOKEN veya TARGET_USER_ID eksik!');
+    process.exit(1);
+}
 
-let currentChannelId = null;
+// ─── Mesajları dosyadan oku ───
+function loadMessages() {
+    const filePath = path.join(__dirname, 'mesajlar.txt');
+    if (!fs.existsSync(filePath)) {
+        console.error('[X] mesajlar.txt bulunamadi!');
+        process.exit(1);
+    }
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const messages = content.split('\n').map(line => line.trim()).filter(Boolean);
+    if (messages.length === 0) {
+        console.error('[X] mesajlar.txt bos!');
+        process.exit(1);
+    }
+    return messages;
+}
 
-// Render'ı uyanık tutmak için basit server
-http.createServer((req, res) => { res.write("Aktif"); res.end(); }).listen(process.env.PORT || 10000);
+const MESSAGES = loadMessages();
+console.log(`[*] ${MESSAGES.length} mesaj yuklendi`);
+console.log(`[*] Kanal: ${CHANNEL_NAME} (${CHANNEL_ID})`);
+console.log(`[*] Yazim hizi: ${WPM} WPM`);
+console.log('[*] Baslatiliyor...\n');
 
-client.on('ready', async () => {
-    console.log(`🚀 Hızlı Mod Aktif: ${client.user.tag}`);
-    runSpammer();
-});
+let totalSent = 0;
+let messageIndex = 0;
 
-async function runSpammer() {
-    if (!fs.existsSync('mesajlar.txt')) return;
-    const messages = fs.readFileSync('mesajlar.txt', 'utf8').split('\n').filter(l => l.trim());
-    let i = 0;
+// ─── 60 WPM yazım süresi hesapla ───
+function calculateTypingDuration(message) {
+    const wordCount = message.length / 5;
+    const durationMs = (wordCount / WPM) * 60 * 1000;
+    return Math.max(1000, Math.min(durationMs, 25000));
+}
 
+// ─── Typing göstergesi gönder ───
+async function sendTyping(channelId) {
+    try {
+        await fetch(`https://discord.com/api/v9/channels/${channelId}/typing`, {
+            method: 'POST',
+            headers: {
+                'Authorization': TOKEN,
+                'Content-Type': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+            }
+        });
+    } catch (err) {
+        console.error('[!] Typing hatasi:', err.message);
+    }
+}
+
+// ─── Mesaj gönder ───
+async function sendMessage(channelId, message) {
+    try {
+        const res = await fetch(`https://discord.com/api/v9/channels/${channelId}/messages`, {
+            method: 'POST',
+            headers: {
+                'Authorization': TOKEN,
+                'Content-Type': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+            },
+            body: JSON.stringify({ content: message })
+        });
+
+        if (res.ok) {
+            totalSent++;
+            console.log(`[+] Mesaj gonderildi (#${totalSent}): "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`);
+            return true;
+        } else {
+            const data = await res.json().catch(() => ({}));
+            if (res.status === 429) {
+                console.log(`[!] Rate limit! 1 saniye bekleniyor...`);
+                await sleep(1000);
+                return false;
+            }
+            console.error(`[!] Mesaj gonderilemedi (${res.status}):`, data);
+            return false;
+        }
+    } catch (err) {
+        console.error('[!] Mesaj hatasi:', err.message);
+        return false;
+    }
+}
+
+// ─── Bekleme ───
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// ─── Ana döngü ───
+async function mainLoop() {
     while (true) {
-        try {
-            let channel = client.channels.cache.get(currentChannelId);
-            
-            if (!channel || channel.name.toLowerCase() !== targetName) {
-                const targetChannel = client.channels.cache.find(c => c.name && c.name.toLowerCase() === targetName);
-                if (targetChannel) {
-                    currentChannelId = targetChannel.id;
-                    channel = targetChannel;
-                } else {
-                    await new Promise(r => setTimeout(r, 150)); // Kanal arama hızı
-                    continue;
-                }
-            }
+        const message = MESSAGES[messageIndex];
+        const typingDuration = calculateTypingDuration(message);
 
-            let anaMesaj = messages[i];
-            let finalMsg = targetUserId ? `${anaMesaj} <@${targetUserId}>` : anaMesaj;
+        console.log(`[~] Yaziyor... "${message.substring(0, 40)}${message.length > 40 ? '...' : ''}" (${(typingDuration / 1000).toFixed(1)}s)`);
 
-            // Yazma efektini hızlandırdım (daha seri görünür)
-            await channel.sendTyping(); 
-            await new Promise(r => setTimeout(r, 100)); // Minimum bekleme
+        // Typing göstergesi - Discord her 10sn'de bir sıfırlar, uzun mesajlarda tekrar gönder
+        const typingIntervals = Math.ceil(typingDuration / 9000);
+        for (let i = 0; i < typingIntervals; i++) {
+            await sendTyping(CHANNEL_ID);
+            const waitTime = Math.min(typingDuration - (i * 9000), 9000);
+            await sleep(waitTime);
+        }
 
-            // MESAJI GÖNDER
-            await channel.send(finalMsg);
-            console.log(`✅ Gönderildi: ${anaMesaj.substring(0, 10)}...`);
+        // Mesajı gönder
+        const success = await sendMessage(CHANNEL_ID, message);
 
-            i = (i + 1) % messages.length;
+        if (success) {
+            messageIndex = (messageIndex + 1) % MESSAGES.length;
+            // Mesajlar arası doğal bekleme (1-3 saniye)
+            const pauseBetween = 1000 + Math.random() * 2000;
+            await sleep(pauseBetween);
+        }
 
-            // --- HIZ AYARI (BURAYI DEĞİŞTİREBİLİRSİN) ---
-            // 800ms (0.8 saniye) yaptık. Eğer yine durursa burayı 1500 yapmalısın.
-            await new Promise(r => setTimeout(r, 800)); 
-
-        } catch (err) {
-            if (err.status === 429) {
-                console.log(`⚠️ Hız sınırı! 3 saniye bekleniyor...`);
-                await new Promise(r => setTimeout(r, 3000));
-            } else {
-                await new Promise(r => setTimeout(r, 500));
-            }
+        if (messageIndex === 0 && success) {
+            console.log('[*] Mesajlar bitti, basa sariliyor...\n');
         }
     }
 }
 
-client.login(token);
+mainLoop();
+
+// ─── Health check HTTP server (Render için) ───
+const PORT = process.env.PORT || 3000;
+http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end(`Aktif | Kanal: ${CHANNEL_NAME} | Gonderilen: ${totalSent} | Siradaki: #${messageIndex + 1}/${MESSAGES.length}`);
+}).listen(PORT, () => console.log(`[*] Port ${PORT} aktif\n`));
